@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -48,6 +49,32 @@ func convertDbUserToUser(user database.User) User {
 	}
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+func convertDbChirpsToChirps(dbChirps []database.Chirp) []Chirp {
+	out := make([]Chirp, len(dbChirps))
+	for i := range dbChirps {
+		out[i] = convertDbChirpToChirp(dbChirps[i])
+	}
+	return out
+}
+
+func convertDbChirpToChirp(chirp database.Chirp) Chirp {
+	return Chirp{
+		ID:        chirp.ID,
+		Body:      chirp.Body,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		UserID:    chirp.UserID,
+	}
+}
+
 func responseWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
 	resp, err := json.Marshal(payload)
 	if err != nil {
@@ -64,7 +91,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) error {
 	return responseWithJSON(w, code, map[string]string{"error": msg})
 }
 
-func badWordReplacement(badWords []string, body *string) string {
+func badWordReplacement(badWords []string, body *string) {
 	bodySplit := strings.Split(*body, " ")
 	for i, word := range bodySplit {
 		if slices.Contains(badWords, strings.ToLower(word)) {
@@ -72,7 +99,6 @@ func badWordReplacement(badWords []string, body *string) string {
 		}
 	}
 	*body = strings.Join(bodySplit, " ")
-	return *body
 }
 
 func main() {
@@ -90,7 +116,9 @@ func main() {
 	mux := http.NewServeMux()
 	apiCfg.dbQueries = database.New(db)
 	fileServerHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
+
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fileServerHandler))
+
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
 			Email string `json:"email"`
@@ -107,9 +135,19 @@ func main() {
 		}
 		responseWithJSON(w, 201, convertDbUserToUser(dbUser))
 	})
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+
+	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		dbChirps, err := apiCfg.dbQueries.GetChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 200, convertDbChirpsToChirps(dbChirps))
+	})
+	mux.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
-			Body string `json:"body"`
+			Body   string    `json:"body"`
+			UserID uuid.UUID `json:"user_id"`
 		}
 		var p params
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
@@ -121,8 +159,36 @@ func main() {
 			return
 		}
 		badWordReplacement([]string{"kerfuffle", "sharbert", "fornax"}, &p.Body)
-		responseWithJSON(w, 200, map[string]string{"cleaned_body": p.Body})
+		dbChirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   p.Body,
+			UserID: p.UserID,
+		})
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 201, convertDbChirpToChirp(dbChirp))
+
 	})
+	mux.HandleFunc("GET /api/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		idUUID, err := uuid.Parse(id)
+		if err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		dbChirp, err := apiCfg.dbQueries.GetChirpByID(r.Context(), idUUID)
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 200, convertDbChirpToChirp(dbChirp))
+	})
+
 	mux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("content-type", "text/html; charset=utf-8")
 		metricsHtml := fmt.Sprintf(`
