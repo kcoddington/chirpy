@@ -1,16 +1,28 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	"github.com/kcoddington/chirpy/internal/database"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileServerHits atomic.Int32
+	dbQueries      *database.Queries
+	platform       string
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -18,6 +30,22 @@ func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		a.fileServerHits.Add(1)
 	})
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func convertDbUserToUser(user database.User) User {
+	return User{
+		ID:        user.ID,
+		Email:     user.Email,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+	}
 }
 
 func responseWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
@@ -48,10 +76,37 @@ func badWordReplacement(badWords []string, body *string) string {
 }
 
 func main() {
-	mux := http.NewServeMux()
 	apiCfg := apiConfig{}
+	dbURL := os.Getenv("POSTGRES_CONN_CHIRPY")
+	godotenv.Load()
+	apiCfg.platform = os.Getenv("PLATFORM")
+	if apiCfg.platform == "" {
+		log.Fatalf("PLATFORM environment variable is not set")
+	}
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+	mux := http.NewServeMux()
+	apiCfg.dbQueries = database.New(db)
 	fileServerHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fileServerHandler))
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type params struct {
+			Email string `json:"email"`
+		}
+		var p params
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		dbUser, err := apiCfg.dbQueries.CreateUser(r.Context(), p.Email)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 201, convertDbUserToUser(dbUser))
+	})
 	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
 			Body string `json:"body"`
@@ -86,7 +141,12 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
+		if apiCfg.platform != "dev" {
+			respondWithError(w, 403, "Forbidden")
+			return
+		}
 		apiCfg.fileServerHits.Swap(0)
+		apiCfg.dbQueries.DeleteAllUsers(r.Context())
 	})
 	server := http.Server{}
 	server.Handler = mux
