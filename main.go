@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"github.com/kcoddington/chirpy/internal"
 	"github.com/kcoddington/chirpy/internal/database"
 	_ "github.com/lib/pq"
 )
@@ -119,23 +120,57 @@ func main() {
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(fileServerHandler))
 
+	// USER ROUTES
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
-			Email string `json:"email"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 		var p params
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			respondWithError(w, 400, err.Error())
 			return
 		}
-		dbUser, err := apiCfg.dbQueries.CreateUser(r.Context(), p.Email)
+		hashedPassword, err := internal.HashPassword(p.Password)
+		dbUser, err := apiCfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+			Email:          p.Email,
+			HashedPassword: hashedPassword,
+		})
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return
 		}
 		responseWithJSON(w, 201, convertDbUserToUser(dbUser))
 	})
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		type params struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		var p params
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		dbUser, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), p.Email)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		
+		isGood, err := internal.CheckPasswordHash(p.Password, dbUser.HashedPassword)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		if !isGood {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		responseWithJSON(w, 200, convertDbUserToUser(dbUser))
+	})
 
+	// CHIRP ROUTES
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 		dbChirps, err := apiCfg.dbQueries.GetChirps(r.Context())
 		if err != nil {
@@ -189,6 +224,7 @@ func main() {
 		responseWithJSON(w, 200, convertDbChirpToChirp(dbChirp))
 	})
 
+	// ADMIN ROUTES
 	mux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("content-type", "text/html; charset=utf-8")
 		metricsHtml := fmt.Sprintf(`
@@ -201,11 +237,6 @@ func main() {
 	`, apiCfg.fileServerHits.Load())
 		w.Write([]byte(metricsHtml))
 	})
-	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("content-type", "text/plain; charset=utf-8")
-		w.WriteHeader(200)
-		w.Write([]byte("OK"))
-	})
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		if apiCfg.platform != "dev" {
 			respondWithError(w, 403, "Forbidden")
@@ -214,6 +245,14 @@ func main() {
 		apiCfg.fileServerHits.Swap(0)
 		apiCfg.dbQueries.DeleteAllUsers(r.Context())
 	})
+
+	// HEALTHZ ROUTE
+	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("content-type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte("OK"))
+	})
+
 	server := http.Server{}
 	server.Handler = mux
 	server.Addr = ":8080"
