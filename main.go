@@ -26,6 +26,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	tokenSecret    string
+	polkaAPIKey    string
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -129,6 +130,10 @@ func main() {
 	apiCfg.platform = os.Getenv("PLATFORM")
 	if apiCfg.platform == "" {
 		log.Fatalf("PLATFORM environment variable is not set")
+	}
+	apiCfg.polkaAPIKey = os.Getenv("POLKA_API_KEY")
+	if apiCfg.polkaAPIKey == "" {
+		log.Fatalf("POLKA_API_KEY environment variable is not set")
 	}
 
 	mux := http.NewServeMux()
@@ -334,6 +339,15 @@ func main() {
 			return
 		}
 		// TODO - check API key from service to verify request - not implemented yet
+		apiKey, err := internal.GetPolkaAPIKey(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		if apiKey != apiCfg.polkaAPIKey {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
 		_, err = apiCfg.dbQueries.UpdateUserIsChirpyRed(r.Context(), database.UpdateUserIsChirpyRedParams{
 			ID:          uuid.MustParse(p.Data.UserID),
 			IsChirpyRed: true,

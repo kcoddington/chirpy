@@ -76,3 +76,11 @@ func MakeRefreshToken() string {
 	}
 	return hex.EncodeToString(token)
 }
+
+func GetPolkaAPIKey(headers http.Header) (string, error) {
+	authzHeader := headers.Get("Authorization")
+	if authzHeader == "" {
+		return "", fmt.Errorf("no authorization header")
+	}
+	return strings.TrimPrefix(authzHeader, "ApiKey "), nil
+}
