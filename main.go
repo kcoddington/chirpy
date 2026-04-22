@@ -157,6 +157,65 @@ func main() {
 		}
 		responseWithJSON(w, 201, convertDbUserToUser(dbUser))
 	})
+	mux.HandleFunc("PUT /api/users", func(w http.ResponseWriter, r *http.Request) {
+		token, err := internal.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		userUUID, err := internal.ValidateJWT(token, apiCfg.tokenSecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		type params struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		var p params
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		// update user email and/or password
+		var hashedPassword string
+		dbUser, err := apiCfg.dbQueries.GetUserByID(r.Context(), userUUID)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		if p.Email != "" {
+			dbUser.Email = p.Email
+		}
+		if p.Password != "" {
+			hashedPassword, err := internal.HashPassword(p.Password)
+			if err != nil {
+				respondWithError(w, 500, err.Error())
+				return
+			}
+			dbUser.HashedPassword = hashedPassword
+		}
+		if hashedPassword != "" {
+			hashedPassword, err = internal.HashPassword(p.Password)
+			if err != nil {
+				respondWithError(w, 500, err.Error())
+				return
+			}
+		}
+		dbUser, err = apiCfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+			ID:             dbUser.ID,
+			Email:          p.Email,
+			HashedPassword: hashedPassword,
+		})
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseUser := convertDbUserToUser(dbUser)
+		responseUser.Token = token
+		responseUser.RefreshToken = internal.MakeRefreshToken()
+		responseWithJSON(w, 200, responseUser)
+	})
 	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
 			Email    string `json:"email"`
@@ -203,7 +262,6 @@ func main() {
 		}
 		responseWithJSON(w, 200, user)
 	})
-
 	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
 		type params struct {
 			RefreshToken string `json:"refresh_token"`
@@ -242,7 +300,6 @@ func main() {
 		}
 		responseWithJSON(w, 200, map[string]string{"token": newToken})
 	})
-
 	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
 		refreshToken, err := internal.GetBearerToken(r.Header)
 		if err != nil || refreshToken == "" {
