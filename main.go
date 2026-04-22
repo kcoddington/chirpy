@@ -25,6 +25,7 @@ type apiConfig struct {
 	fileServerHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	tokenSecret    string
 }
 
 func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -35,10 +36,12 @@ func (a *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func convertDbUserToUser(user database.User) User {
@@ -105,15 +108,27 @@ func badWordReplacement(badWords []string, body *string) {
 func main() {
 	apiCfg := apiConfig{}
 	dbURL := os.Getenv("POSTGRES_CONN_CHIRPY")
-	godotenv.Load()
-	apiCfg.platform = os.Getenv("PLATFORM")
-	if apiCfg.platform == "" {
-		log.Fatalf("PLATFORM environment variable is not set")
+	if dbURL == "" {
+		log.Fatalf("POSTGRES_CONN_CHIRPY environment variable is not set")
 	}
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)
 	}
+	defer db.Close()
+
+	tokenSecret := os.Getenv("CHIRPY_JWT_SIGNING_KEY")
+	if tokenSecret == "" {
+		log.Fatalf("CHIRPY_JWT_SIGNING_KEY environment variable is not set")
+	}
+	apiCfg.tokenSecret = tokenSecret
+
+	godotenv.Load()
+	apiCfg.platform = os.Getenv("PLATFORM")
+	if apiCfg.platform == "" {
+		log.Fatalf("PLATFORM environment variable is not set")
+	}
+
 	mux := http.NewServeMux()
 	apiCfg.dbQueries = database.New(db)
 	fileServerHandler := http.StripPrefix("/app/", http.FileServer(http.Dir(".")))
@@ -152,12 +167,13 @@ func main() {
 			respondWithError(w, 400, err.Error())
 			return
 		}
+
 		dbUser, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), p.Email)
 		if err != nil {
 			respondWithError(w, 401, "Unauthorized")
 			return
 		}
-		
+
 		isGood, err := internal.CheckPasswordHash(p.Password, dbUser.HashedPassword)
 		if err != nil {
 			respondWithError(w, 500, err.Error())
@@ -167,7 +183,70 @@ func main() {
 			respondWithError(w, 401, "Unauthorized")
 			return
 		}
-		responseWithJSON(w, 200, convertDbUserToUser(dbUser))
+		token, err := internal.MakeJWT(dbUser.ID, apiCfg.tokenSecret)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		user := convertDbUserToUser(dbUser)
+		user.Token = token
+		user.RefreshToken = internal.MakeRefreshToken()
+		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:     user.RefreshToken,
+			UserID:    user.ID,
+			ExpiresAt: time.Now().Add(60 * 24 * time.Hour),
+			RevokedAt: sql.NullTime{},
+		})
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 200, user)
+	})
+
+	mux.HandleFunc("POST /api/refresh", func(w http.ResponseWriter, r *http.Request) {
+		type params struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		var p params
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil || p.RefreshToken == "" {
+			respondWithError(w, 400, "Missing or invalid refresh token")
+			return
+		}
+		dbRefreshToken, err := apiCfg.dbQueries.GetRefreshTokenByToken(r.Context(), p.RefreshToken)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		if dbRefreshToken.ExpiresAt.Before(time.Now()) {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		if dbRefreshToken.RevokedAt.Valid {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		dbUser, err := apiCfg.dbQueries.GetUserFromRefreshToken(r.Context(), dbRefreshToken.Token)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		newToken, err := internal.MakeJWT(dbUser.ID, apiCfg.tokenSecret)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 200, map[string]string{"token": newToken})
+	})
+
+	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
+		refreshToken := r.Header.Get("Authorization")
+		err := apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 204, nil)
 	})
 
 	// CHIRP ROUTES
@@ -186,9 +265,20 @@ func main() {
 		}
 		var p params
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			respondWithError(w, 400, err.Error())
+			respondWithError(w, 401, "Unauthorized")
 			return
 		}
+		token, err := internal.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		userUUID, err := internal.ValidateJWT(token, apiCfg.tokenSecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		p.UserID = userUUID
 		if len(p.Body) > 140 {
 			respondWithError(w, 400, "Chirp is too long")
 			return
