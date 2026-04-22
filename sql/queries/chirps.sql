@@ -12,3 +12,6 @@ insert into chirps (body, user_id) values ($1, $2) returning *;
 
 -- name: DeleteAllChirps :exec
 delete from chirps;
+
+-- name: DeleteChirp :exec
+delete from chirps where id = $1;

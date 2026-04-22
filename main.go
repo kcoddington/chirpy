@@ -378,6 +378,45 @@ func main() {
 		}
 		responseWithJSON(w, 200, convertDbChirpToChirp(dbChirp))
 	})
+	mux.HandleFunc("DELETE /api/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		idUUID, err := uuid.Parse(id)
+		if err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		// validate JWT and authz
+		token, err := internal.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		userUUID, err := internal.ValidateJWT(token, apiCfg.tokenSecret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		dbChirp, err := apiCfg.dbQueries.GetChirpByID(r.Context(), idUUID)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		if dbChirp.UserID != userUUID {
+			respondWithError(w, 403, "Forbidden")
+			return
+		}
+
+		err = apiCfg.dbQueries.DeleteChirp(r.Context(), idUUID)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+		responseWithJSON(w, 204, nil)
+	})
 
 	// ADMIN ROUTES
 	mux.HandleFunc("GET /admin/metrics", func(w http.ResponseWriter, r *http.Request) {
