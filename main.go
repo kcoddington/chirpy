@@ -42,14 +42,16 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 func convertDbUserToUser(user database.User) User {
 	return User{
-		ID:        user.ID,
-		Email:     user.Email,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
+		ID:          user.ID,
+		Email:       user.Email,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 }
 
@@ -307,6 +309,35 @@ func main() {
 			return
 		}
 		err = apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		if err != nil {
+			respondWithError(w, 500, err.Error())
+			return
+		}
+		responseWithJSON(w, 204, nil)
+	})
+
+	// POLKA WEBHOOK ROUTES
+	mux.HandleFunc("POST /api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		type params struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserID string `json:"user_id"`
+			} `json:"data"`
+		}
+		var p params
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			respondWithError(w, 400, err.Error())
+			return
+		}
+		if p.Event != "user.upgraded" {
+			responseWithJSON(w, 204, nil)
+			return
+		}
+		// TODO - check API key from service to verify request - not implemented yet
+		_, err = apiCfg.dbQueries.UpdateUserIsChirpyRed(r.Context(), database.UpdateUserIsChirpyRedParams{
+			ID:          uuid.MustParse(p.Data.UserID),
+			IsChirpyRed: true,
+		})
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return

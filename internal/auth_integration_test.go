@@ -19,6 +19,7 @@ type userResp struct {
 	Email        string `json:"email"`
 	Token        string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed  bool   `json:"is_chirpy_red"`
 }
 
 type refreshResp struct {
@@ -139,6 +140,80 @@ func TestRefreshToken_MissingBodyField_Integration(t *testing.T) {
 	}
 }
 
+func TestPolkaWebhookUpgradeFlow_Integration(t *testing.T) {
+	baseURL := os.Getenv("CHIRPY_BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080"
+	}
+	if os.Getenv("RUN_INTEGRATION") != "1" {
+		t.Skip("set RUN_INTEGRATION=1 to run integration tests")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// 1) Reset app state
+	resetStatus, resetBody := postEmpty(t, client, baseURL+"/admin/reset")
+	if resetStatus != http.StatusOK {
+		t.Fatalf("expected 200 from /admin/reset, got %d body=%s", resetStatus, string(resetBody))
+	}
+
+	// 2) Create user and assert default chirpy-red value
+	email := fmt.Sprintf("walt-%d@breakingbad.com", time.Now().UnixNano())
+	password := "heisenberg123"
+	createStatus, createBody := postJSON(t, client, baseURL+"/api/users", map[string]string{
+		"email":    email,
+		"password": password,
+	})
+	if createStatus != http.StatusCreated {
+		t.Fatalf("expected 201 from /api/users, got %d body=%s", createStatus, string(createBody))
+	}
+
+	var created userResp
+	if err := json.Unmarshal(createBody, &created); err != nil {
+		t.Fatalf("failed to decode create user response: %v", err)
+	}
+	if created.Email != email {
+		t.Fatalf("expected created email %q, got %q", email, created.Email)
+	}
+	if created.IsChirpyRed {
+		t.Fatal("expected created user is_chirpy_red to be false")
+	}
+	if created.ID == "" {
+		t.Fatal("expected created user id")
+	}
+
+	// 3) Call webhook twice with user.upgraded
+	webhookPayload := map[string]any{
+		"event": "user.upgraded",
+		"data": map[string]string{
+			"user_id": created.ID,
+		},
+	}
+	for i := 0; i < 2; i++ {
+		webhookStatus, webhookBody := postJSON(t, client, baseURL+"/api/polka/webhooks", webhookPayload)
+		if webhookStatus != http.StatusNoContent {
+			t.Fatalf("expected 204 from /api/polka/webhooks on call %d, got %d body=%s", i+1, webhookStatus, string(webhookBody))
+		}
+	}
+
+	// 4) Login should now report chirpy-red user
+	loginStatus, loginBody := postJSON(t, client, baseURL+"/api/login", map[string]string{
+		"email":    email,
+		"password": password,
+	})
+	if loginStatus != http.StatusOK {
+		t.Fatalf("expected 200 from /api/login, got %d body=%s", loginStatus, string(loginBody))
+	}
+
+	var login userResp
+	if err := json.Unmarshal(loginBody, &login); err != nil {
+		t.Fatalf("failed to decode login response: %v", err)
+	}
+	if !login.IsChirpyRed {
+		t.Fatalf("expected login is_chirpy_red to be true after webhook upgrades, body=%s", string(loginBody))
+	}
+}
+
 func postJSON(t *testing.T, client *http.Client, url string, payload any) (int, []byte) {
 	t.Helper()
 	b, err := json.Marshal(payload)
@@ -150,6 +225,21 @@ func postJSON(t *testing.T, client *http.Client, url string, payload any) (int, 
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body
+}
+
+func postEmpty(t *testing.T, client *http.Client, url string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)

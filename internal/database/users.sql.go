@@ -12,7 +12,7 @@ import (
 )
 
 const createUser = `-- name: CreateUser :one
-insert into users (email, hashed_password) values ($1, $2) returning id, email, created_at, updated_at, hashed_password
+insert into users (email, hashed_password) values ($1, $2) returning id, email, created_at, updated_at, hashed_password, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -29,6 +29,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -43,7 +44,7 @@ func (q *Queries) DeleteAllUsers(ctx context.Context) error {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-select id, email, created_at, updated_at, hashed_password from users where email = $1 limit 1
+select id, email, created_at, updated_at, hashed_password, is_chirpy_red from users where email = $1 limit 1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -55,12 +56,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-select id, email, created_at, updated_at, hashed_password from users where id = $1 limit 1
+select id, email, created_at, updated_at, hashed_password, is_chirpy_red from users where id = $1 limit 1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -72,12 +74,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const getUserFromRefreshToken = `-- name: GetUserFromRefreshToken :one
-select users.id, users.email, users.created_at, users.updated_at, users.hashed_password from users join refresh_tokens on users.id = refresh_tokens.user_id where refresh_tokens.token = $1 limit 1
+select users.id, users.email, users.created_at, users.updated_at, users.hashed_password, users.is_chirpy_red from users join refresh_tokens on users.id = refresh_tokens.user_id where refresh_tokens.token = $1 limit 1
 `
 
 func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (User, error) {
@@ -89,12 +92,13 @@ func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (Us
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
 const updateUser = `-- name: UpdateUser :one
-update users set email = $2, hashed_password = $3 where id = $1 returning id, email, created_at, updated_at, hashed_password
+update users set email = $2, hashed_password = $3 where id = $1 returning id, email, created_at, updated_at, hashed_password, is_chirpy_red
 `
 
 type UpdateUserParams struct {
@@ -112,6 +116,30 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
+	)
+	return i, err
+}
+
+const updateUserIsChirpyRed = `-- name: UpdateUserIsChirpyRed :one
+update users set is_chirpy_red = $2 where id = $1 returning id, email, created_at, updated_at, hashed_password, is_chirpy_red
+`
+
+type UpdateUserIsChirpyRedParams struct {
+	ID          uuid.UUID
+	IsChirpyRed bool
+}
+
+func (q *Queries) UpdateUserIsChirpyRed(ctx context.Context, arg UpdateUserIsChirpyRedParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserIsChirpyRed, arg.ID, arg.IsChirpyRed)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
