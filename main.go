@@ -361,7 +361,15 @@ func main() {
 
 	// CHIRP ROUTES
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		dbChirps, err := apiCfg.dbQueries.GetChirps(r.Context())
+		// check for query param "author_id" that maps to chirp user_id
+		authorID := r.URL.Query().Get("author_id")
+		var dbChirps []database.Chirp
+		var err error
+		if authorID != "" {
+			dbChirps, err = apiCfg.dbQueries.GetChirpsByUserID(r.Context(), uuid.MustParse(authorID))
+		} else {
+			dbChirps, err = apiCfg.dbQueries.GetChirps(r.Context())
+		}
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return
