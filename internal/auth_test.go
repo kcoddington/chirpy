@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/google/uuid"
@@ -81,5 +82,41 @@ func TestExpiredJWT(t *testing.T) {
 	_, err := MakeJWT(userID, tokenSecret)
 	if err != nil && err.Error() != "token expired" {
 		t.Fatalf("Error making JWT: %v", err)
+	}
+}
+
+func TestMakeRefreshToken_NotEmpty(t *testing.T) {
+	token := MakeRefreshToken()
+	if token == "" {
+		t.Fatal("expected refresh token to be non-empty")
+	}
+}
+
+func TestMakeRefreshToken_IsValidHexAndExpectedLength(t *testing.T) {
+	token := MakeRefreshToken()
+
+	// 32 bytes should encode to 64 hex characters.
+	if len(token) != 64 {
+		t.Fatalf("expected token length 64, got %d", len(token))
+	}
+
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("expected token to be valid hex, got error: %v", err)
+	}
+}
+
+func TestMakeRefreshToken_UniqueAcrossCalls(t *testing.T) {
+	const sampleSize = 25
+	seen := make(map[string]struct{}, sampleSize)
+
+	for i := 0; i < sampleSize; i++ {
+		token := MakeRefreshToken()
+		if token == "" {
+			t.Fatal("expected refresh token to be non-empty")
+		}
+		if _, exists := seen[token]; exists {
+			t.Fatalf("duplicate token generated on iteration %d", i)
+		}
+		seen[token] = struct{}{}
 	}
 }

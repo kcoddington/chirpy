@@ -208,12 +208,16 @@ func main() {
 		type params struct {
 			RefreshToken string `json:"refresh_token"`
 		}
-		var p params
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil || p.RefreshToken == "" {
-			respondWithError(w, 400, "Missing or invalid refresh token")
-			return
+		refreshToken, err := internal.GetBearerToken(r.Header)
+		if err != nil || refreshToken == "" {
+			var p params
+			if err := json.NewDecoder(r.Body).Decode(&p); err != nil || p.RefreshToken == "" {
+				respondWithError(w, 400, "Missing or invalid refresh token")
+				return
+			}
+			refreshToken = p.RefreshToken
 		}
-		dbRefreshToken, err := apiCfg.dbQueries.GetRefreshTokenByToken(r.Context(), p.RefreshToken)
+		dbRefreshToken, err := apiCfg.dbQueries.GetRefreshTokenByToken(r.Context(), refreshToken)
 		if err != nil {
 			respondWithError(w, 401, "Unauthorized")
 			return
@@ -240,8 +244,12 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /api/revoke", func(w http.ResponseWriter, r *http.Request) {
-		refreshToken := r.Header.Get("Authorization")
-		err := apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
+		refreshToken, err := internal.GetBearerToken(r.Header)
+		if err != nil || refreshToken == "" {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+		err = apiCfg.dbQueries.RevokeRefreshToken(r.Context(), refreshToken)
 		if err != nil {
 			respondWithError(w, 500, err.Error())
 			return
